@@ -1,4 +1,4 @@
-# autosub
+# whispersub
 
 Transcribe video files to [ASS](https://fileformats.fandom.com/wiki/SubStation_Alpha) subtitle files using [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (Whisper large-v3-turbo).
 
@@ -14,32 +14,32 @@ Python 3.9+. Works on Linux, Windows, and macOS. No system FFmpeg needed — PyA
 ## Install
 
 ```bash
-pip install autosub
+pip install whispersub
 ```
 
 GPU acceleration (Linux/Windows — requires an NVIDIA GPU with CUDA 12):
 
 ```bash
-pip install autosub[gpu]
+pip install whispersub[gpu]
 ```
 
-Without `[gpu]`, autosub falls back to CPU automatically if CUDA is unavailable.
+Without `[gpu]`, whispersub falls back to CPU automatically if CUDA is unavailable.
 
 ## Usage
 
 ```bash
 # Single file — writes movie.en.ass alongside the video
-autosub movie.mkv
+whispersub movie.mkv
 
 # Explicit output directory
-autosub movie.mkv --output-dir ~/subs
+whispersub movie.mkv --output-dir ~/subs
 
 # Whole directory, force overwrite
-autosub /media/shows --force
+whispersub /media/shows --force
 
 # File with multiple audio tracks — list tracks first, then pick one
-autosub series.mkv                     # error lists available tracks
-autosub series.mkv --audio-track 2
+whispersub series.mkv                     # error lists available tracks
+whispersub series.mkv --audio-track 2
 ```
 
 ## Options

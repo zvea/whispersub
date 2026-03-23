@@ -1,7 +1,7 @@
 import pysubs2
 from faster_whisper.transcribe import Segment, Word
 
-from autosub import make_event, make_line_groups, merge_tokens, seg_to_events
+from whispersub import make_event, make_line_groups, merge_tokens, seg_to_events
 
 
 def w(word: str, start: float = 0.0, end: float = 1.0, prob: float = 0.9) -> Word:

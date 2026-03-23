@@ -91,7 +91,7 @@ class WordRecord:
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class AssCommentPayload:
-    """Payload serialised into every autosub Comment: event in the ASS output.
+    """Payload serialised into every whispersub Comment: event in the ASS output.
 
     Only one Comment is emitted per segment. All fields beyond seg_id have
     defaults so that fields added in the future do not break readers of older files.
@@ -650,7 +650,7 @@ def main() -> None:
         console.print(
             "[yellow]Warning:[/yellow] GPU/CUDA unavailable, falling back to CPU.\n"
             "For GPU support: install CUDA 12 (nvidia.com/cuda-downloads)"
-            " or run: [bold]pip install autosub\\[gpu][/bold]"
+            " or run: [bold]pip install whispersub\\[gpu][/bold]"
         )
         model = WhisperModel(_MODEL, device="cpu", compute_type="int8", cpu_threads=args.max_threads or 0)
 
