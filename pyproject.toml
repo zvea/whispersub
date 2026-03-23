@@ -18,6 +18,9 @@ dependencies = [
     "rich",
 ]
 
+[project.urls]
+Repository = "https://github.com/zvea/whispersub"
+
 [project.scripts]
 whispersub = "whispersub:main"
 
