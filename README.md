@@ -9,7 +9,7 @@ Transcribe video files to [ASS](https://fileformats.fandom.com/wiki/SubStation_A
 
 ## Requirements
 
-Python 3.9+. Works on Linux, Windows, and macOS. No system FFmpeg needed — PyAV bundles its own.
+Python 3.10+. Works on Linux, Windows, and macOS. No system FFmpeg needed — PyAV bundles its own.
 
 ## Install
 
