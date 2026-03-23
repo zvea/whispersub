@@ -30,7 +30,7 @@ from faster_whisper.transcribe import Segment, TranscriptionInfo, Word
 from faster_whisper.vad import VadOptions
 from rich.console import Console
 from rich.markup import escape
-from rich.progress import BarColumn, Progress, TextColumn
+from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn
 from rich.rule import Rule
 
 # ---------------------------------------------------------------------------
@@ -393,9 +393,8 @@ def list_audio_tracks(video: Path) -> list[str]:
             lang = stream.metadata.get("language", "und")
             title = stream.metadata.get("title", "")
             layout = ctx.layout.name if ctx.layout else f"{ctx.channels}ch"
-            kbps = f" {ctx.bit_rate // 1000}kbps" if ctx.bit_rate else ""
             profile = f" {ctx.profile}" if ctx.profile else ""
-            label = f"#{audio_idx} {lang} {ctx.name}{profile} {ctx.sample_rate}Hz {layout}{kbps}"
+            label = f"#{audio_idx} {lang} {ctx.name}{profile} {ctx.sample_rate}Hz {layout}"
             if title:
                 label += f' "{title}"'
             tracks.append(label)
@@ -644,13 +643,29 @@ def cmd_list_audio_tracks(videos: list[Path]) -> None:
     """Implement --list-audio-tracks: print unique track configurations with file counts."""
     configs: dict[tuple[str, ...], list[Path]] = {}
     read_errors: list[str] = []
+    if len(videos) > 10:
+        progress = Progress(
+            TextColumn("  [dim]{task.description}[/dim]"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            console=console,
+        )
+        scan_task = progress.add_task("Scanning:", total=len(videos))
+        progress.start()
+    else:
+        progress = None
+        scan_task = None
     for video in videos:
         try:
             key = tuple(list_audio_tracks(video))
         except av.error.FFmpegError as exc:
             read_errors.append(f"{video.name}: {exc.strerror}")
-            continue
-        configs.setdefault(key, []).append(video)
+        else:
+            configs.setdefault(key, []).append(video)
+        if progress is not None:
+            progress.advance(scan_task)
+    if progress is not None:
+        progress.stop()
     for tracks, group in sorted(configs.items(), key=lambda x: -len(x[1])):
         first = group[0].name
         others = len(group) - 1

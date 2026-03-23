@@ -40,7 +40,7 @@ whispersub movie.mkv --output-dir ~/subs
 # Whole directory, force overwrite
 whispersub /media/shows --force
 
-# File with multiple audio tracks — inspect layouts, then pick one track
+# File with multiple audio tracks — inspect, then pick one
 whispersub series.mkv --list-audio-tracks
 whispersub series.mkv --audio-track 2
 ```
@@ -49,7 +49,7 @@ whispersub series.mkv --audio-track 2
 
 | Option | Default | Description |
 |---|---|---|
-| `--audio-track N` | auto | Audio track index (required if the file has multiple tracks) |
+| `--audio-track N` | — | Audio track index (required if the file has multiple tracks) |
 | `--list-audio-tracks` | off | Show audio tracks for all input videos, grouped by configuration, and exit |
 | `--colour-by` | `probability` | Per-word terminal colour coding: `probability` or `duration` |
 | `--font-size N` | `48` | Font size (1280×720 canvas; player scales to actual resolution) |
