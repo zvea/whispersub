@@ -1,7 +1,13 @@
+import sys
+from pathlib import Path
+from unittest.mock import patch
+
+import av.error
 import pysubs2
+import pytest
 from faster_whisper.transcribe import Segment, Word
 
-from whispersub import make_event, make_line_groups, merge_tokens, seg_to_events
+from whispersub import collect_videos, make_event, make_line_groups, merge_tokens, seg_to_events, validate_audio_tracks
 
 
 def w(word: str, start: float = 0.0, end: float = 1.0, prob: float = 0.9) -> Word:
@@ -389,3 +395,137 @@ def test_seg_to_events_all_cards_share_name():
     seg = make_seg(words=words)
     events = list(seg_to_events(seg, seg_id=0, max_line_width=10, max_line_count=2))
     assert len({e.name for e in events}) == 1
+
+
+# ---------------------------------------------------------------------------
+# collect_videos
+# ---------------------------------------------------------------------------
+
+
+def test_collect_videos_single_file(tmp_path):
+    """A single video file path is returned as a one-element list."""
+    f = tmp_path / "movie.mkv"
+    f.touch()
+    result = collect_videos([str(f)])
+    assert result == [f]
+
+
+def test_collect_videos_directory_scanned_recursively(tmp_path):
+    """A directory input is scanned recursively; non-video files are ignored."""
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    video1 = tmp_path / "a.mp4"
+    video2 = sub / "b.mkv"
+    other = tmp_path / "readme.txt"
+    for p in (video1, video2, other):
+        p.touch()
+    result = collect_videos([str(tmp_path)])
+    assert sorted(result) == sorted([video1, video2])
+
+
+def test_collect_videos_deduplicates(tmp_path):
+    """The same file given twice (once directly, once via its directory) appears once."""
+    f = tmp_path / "movie.mp4"
+    f.touch()
+    result = collect_videos([str(f), str(tmp_path)])
+    assert result == [f]
+
+
+def test_collect_videos_result_is_sorted(tmp_path):
+    """Returned paths are in sorted order regardless of discovery order."""
+    for name in ("c.mp4", "a.mkv", "b.avi"):
+        (tmp_path / name).touch()
+    result = collect_videos([str(tmp_path)])
+    assert result == sorted(result)
+
+
+def test_collect_videos_nonexistent_path_exits(tmp_path):
+    """A path that does not exist causes sys.exit(1)."""
+    with pytest.raises(SystemExit) as exc_info:
+        collect_videos([str(tmp_path / "missing.mp4")])
+    assert exc_info.value.code == 1
+
+
+def test_collect_videos_unrecognised_extension_exits(tmp_path):
+    """A file with an unrecognised extension causes sys.exit(1)."""
+    f = tmp_path / "document.pdf"
+    f.touch()
+    with pytest.raises(SystemExit) as exc_info:
+        collect_videos([str(f)])
+    assert exc_info.value.code == 1
+
+
+def test_collect_videos_empty_directory(tmp_path):
+    """An empty directory returns an empty list."""
+    result = collect_videos([str(tmp_path)])
+    assert result == []
+
+
+# ---------------------------------------------------------------------------
+# validate_audio_tracks
+# ---------------------------------------------------------------------------
+
+
+def _ffmpeg_error(msg: str) -> av.error.FFmpegError:
+    """Construct a minimal FFmpegError with the given strerror."""
+    exc = av.error.FFmpegError.__new__(av.error.FFmpegError)
+    OSError.__init__(exc, msg)
+    return exc
+
+
+def test_validate_audio_tracks_single_track_no_request():
+    """One track and no --audio-track requested: no error, no exit."""
+    with patch("whispersub.list_audio_tracks", return_value=["#0 eng aac 48000Hz stereo"]):
+        validate_audio_tracks([Path("a.mkv")], None)  # must not raise
+
+
+def test_validate_audio_tracks_explicit_track_valid():
+    """Requested track index within range: no error."""
+    tracks = ["#0 eng aac", "#1 jpn ac3"]
+    with patch("whispersub.list_audio_tracks", return_value=tracks):
+        validate_audio_tracks([Path("a.mkv")], 1)
+
+
+def test_validate_audio_tracks_no_tracks_exits():
+    """A video with no audio tracks causes sys.exit(1)."""
+    with patch("whispersub.list_audio_tracks", return_value=[]):
+        with pytest.raises(SystemExit) as exc_info:
+            validate_audio_tracks([Path("silent.mkv")], None)
+    assert exc_info.value.code == 1
+
+
+def test_validate_audio_tracks_multiple_tracks_no_selection_exits():
+    """Multiple tracks without --audio-track causes sys.exit(1)."""
+    tracks = ["#0 eng aac", "#1 jpn ac3"]
+    with patch("whispersub.list_audio_tracks", return_value=tracks):
+        with pytest.raises(SystemExit) as exc_info:
+            validate_audio_tracks([Path("multi.mkv")], None)
+    assert exc_info.value.code == 1
+
+
+def test_validate_audio_tracks_out_of_range_exits():
+    """--audio-track index beyond the available tracks causes sys.exit(1)."""
+    with patch("whispersub.list_audio_tracks", return_value=["#0 eng aac"]):
+        with pytest.raises(SystemExit) as exc_info:
+            validate_audio_tracks([Path("a.mkv")], 5)
+    assert exc_info.value.code == 1
+
+
+def test_validate_audio_tracks_broken_file_exits():
+    """A file that raises FFmpegError is reported and causes sys.exit(1)."""
+    with patch("whispersub.list_audio_tracks", side_effect=av.error.InvalidDataError(1, "Invalid data")):
+        with pytest.raises(SystemExit) as exc_info:
+            validate_audio_tracks([Path("broken.mkv")], None)
+    assert exc_info.value.code == 1
+
+
+def test_validate_audio_tracks_all_errors_reported_together(capsys):
+    """All pre-flight errors across multiple videos are collected before exiting."""
+    def fake_tracks(video):
+        if video.name == "broken.mkv":
+            raise av.error.InvalidDataError(1, "Invalid data")
+        return []
+
+    with patch("whispersub.list_audio_tracks", side_effect=fake_tracks):
+        with pytest.raises(SystemExit):
+            validate_audio_tracks([Path("broken.mkv"), Path("silent.mkv")], None)
