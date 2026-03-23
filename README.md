@@ -1,6 +1,6 @@
 # whispersub
 
-Transcribe video files to [ASS](https://fileformats.fandom.com/wiki/SubStation_Alpha) subtitle files using [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (Whisper large-v3-turbo).
+Transcribe video files to [ASS](https://fileformats.fandom.com/wiki/SubStation_Alpha) subtitle files using [faster-whisper](https://github.com/SYSTRAN/faster-whisper). Whisper detects the spoken language automatically and supports [99 languages](https://github.com/openai/whisper#available-models-and-languages), including English, Spanish, French, German, Japanese, Chinese, Arabic, Hindi, and many more.
 
 - Batch mode: pass multiple files or directories to scan recursively
 - Surround-sound audio extraction (dialogue-channel aware)
@@ -9,7 +9,7 @@ Transcribe video files to [ASS](https://fileformats.fandom.com/wiki/SubStation_A
 
 ## Requirements
 
-Python 3.10+. Works on Linux, Windows, and macOS. No system FFmpeg needed — PyAV bundles its own.
+Python 3.10+. Works on Linux, Windows, and macOS. No system FFmpeg needed — PyAV bundles its own. Supports MKV, MP4, AVI, MOV, WebM, TS, and other common video formats.
 
 ## Install
 
@@ -24,6 +24,8 @@ pip install whispersub[gpu]
 ```
 
 Without `[gpu]`, whispersub falls back to CPU automatically if CUDA is unavailable.
+
+On first run, whispersub downloads the Whisper large-v3-turbo model (~800 MB) from Hugging Face and caches it locally.
 
 ## Usage
 
@@ -58,9 +60,9 @@ whispersub series.mkv --audio-track 2
 
 ## Output
 
-Subtitle files are named `<stem>.<language>.ass`, e.g. `movie.en.ass`. The detected language comes from Whisper.
+Subtitle files are named `<stem>.<language>.ass`, e.g. `movie.en.ass`. The detected language comes from Whisper. Output is compatible with VLC, mpv, IINA, MPC-HC, and other players that support ASS/SSA subtitles.
 
-Each ASS file contains hidden `Comment:` events carrying word-level timestamp data in JSON, so the raw timing can be recovered by tooling without re-transcribing.
+We chose ASS over SRT for better-looking subtitles: font sizing scales correctly to any resolution, and line breaks are balanced for readability. It also allows us to preserve word-level timing, so the file can be post-processed or reformatted without re-transcribing.
 
 ## Licence
 

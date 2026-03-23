@@ -5,13 +5,35 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "whispersub"
 dynamic = ["version"]
-description = "Transcribe videos to ASS subtitle files using faster-whisper"
+description = "Transcribe videos to ASS subtitle files in 99 languages using faster-whisper"
+keywords = [
+    "ASS",
+    "audio",
+    "automatic subtitles",
+    "captions",
+    "faster-whisper",
+    "multilingual",
+    "speech recognition",
+    "speech-to-text",
+    "SRT",
+    "SSA",
+    "subtitle",
+    "subtitle generation",
+    "subtitles",
+    "transcription",
+    "video",
+    "whisper",
+]
 classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "Environment :: Console",
+    "Topic :: Multimedia :: Sound/Audio :: Analysis",
     "Topic :: Multimedia :: Sound/Audio :: Speech",
     "Topic :: Multimedia :: Video",
 ]
@@ -29,6 +51,7 @@ dependencies = [
 
 [project.urls]
 Repository = "https://github.com/zvea/whispersub"
+Issues = "https://github.com/zvea/whispersub/issues"
 
 [project.scripts]
 whispersub = "whispersub:main"
