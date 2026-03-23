@@ -2,7 +2,8 @@
 
 Transcribe video files to [ASS](https://fileformats.fandom.com/wiki/SubStation_Alpha) subtitle files using [faster-whisper](https://github.com/SYSTRAN/faster-whisper). Whisper detects the spoken language automatically and supports [99 languages](https://github.com/openai/whisper#available-models-and-languages), including English, Spanish, French, German, Japanese, Chinese, Arabic, Hindi, and many more.
 
-- Batch mode: pass multiple files or directories to scan recursively
+- NVIDIA GPU acceleration with automatic CPU fallback
+- Batch mode: pass multiple video files or directory trees
 - Surround-sound audio extraction (dialogue-channel aware)
 - Word-level timestamps with balanced line breaking
 - Per-word confidence colour coding in the terminal
