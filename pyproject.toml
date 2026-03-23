@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=70", "wheel"]
+requires = ["setuptools>=70", "setuptools-scm>=8", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "autosub"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Transcribe videos to ASS subtitle files using faster-whisper"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -27,6 +27,8 @@ gpu = [
     "nvidia-cuda-runtime-cu12; sys_platform != 'darwin'",
 ]
 dev = ["pytest"]
+
+[tool.setuptools_scm]
 
 [tool.setuptools]
 py-modules = ["autosub"]
