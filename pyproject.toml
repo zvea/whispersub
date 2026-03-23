@@ -61,9 +61,15 @@ gpu = [
     "nvidia-cublas-cu12; sys_platform != 'darwin'",
     "nvidia-cuda-runtime-cu12; sys_platform != 'darwin'",
 ]
-dev = ["pytest"]
+dev = ["pytest", "pytest-cov"]
 
 [tool.setuptools_scm]
+
+[tool.pytest.ini_options]
+addopts = "--cov=whispersub --cov-report=term-missing"
+
+[tool.coverage.report]
+exclude_also = ["if __name__ == \"__main__\":"]
 
 [tool.setuptools]
 py-modules = ["whispersub"]
