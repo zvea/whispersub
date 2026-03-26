@@ -8,7 +8,7 @@ import pysubs2
 import pytest
 from faster_whisper.transcribe import Segment, Word
 
-from whispersub import _cuda_encode_works, _surround_mix_weights, collect_videos, load_model, main, make_event, make_line_groups, merge_tokens, seg_to_events, validate_audio_tracks
+from whispersub import _cuda_encode_works, _offset_segment, _surround_mix_weights, collect_videos, is_hallucination, load_model, main, make_event, make_line_groups, merge_tokens, seg_to_events, validate_audio_tracks
 
 
 def w(word: str, start: float = 0.0, end: float = 1.0, prob: float = 0.9) -> Word:
@@ -705,3 +705,84 @@ def test_load_model_reraises_unrelated_runtime_errors():
         pytest.raises(RuntimeError, match="out of memory"),
     ):
         load_model(max_threads=None)
+
+
+# ---------------------------------------------------------------------------
+# is_hallucination
+# ---------------------------------------------------------------------------
+
+
+def test_is_hallucination_exact_match():
+    """Known hallucination string is detected."""
+    assert is_hallucination("Субтитры создавал DimaTorzok") is True
+
+
+def test_is_hallucination_case_insensitive():
+    """Matching ignores case differences."""
+    assert is_hallucination("субтитры создавал DIMATORZOK") is True
+
+
+def test_is_hallucination_trailing_punctuation():
+    """Trailing sentence punctuation is stripped before matching."""
+    assert is_hallucination("다음 영상에서 만나요.") is True
+    assert is_hallucination("다음 영상에서 만나요!") is True
+
+
+def test_is_hallucination_leading_whitespace():
+    """Leading/trailing whitespace is stripped before matching."""
+    assert is_hallucination("  Субтитры создавал DimaTorzok  ") is True
+
+
+def test_is_hallucination_normal_text():
+    """Normal dialogue is not flagged."""
+    assert is_hallucination("Büro ist wie Achterbahnfahren") is False
+
+
+def test_is_hallucination_empty_string():
+    """Empty string is not a hallucination."""
+    assert is_hallucination("") is False
+
+
+def test_is_hallucination_korean():
+    """Korean YouTube outro hallucination is detected."""
+    assert is_hallucination("다음 영상에서 만나요") is True
+
+
+# ---------------------------------------------------------------------------
+# _offset_segment
+# ---------------------------------------------------------------------------
+
+
+def test_offset_segment_shifts_timestamps():
+    """Segment and word timestamps are shifted by the given offset."""
+    seg = make_seg(
+        words=[w(" hello", 1.0, 2.0, 0.9), w(" world", 2.5, 3.5, 0.8)],
+        start=1.0, end=3.5,
+    )
+    shifted = _offset_segment(seg, 10.0)
+    assert shifted.start == pytest.approx(11.0)
+    assert shifted.end == pytest.approx(13.5)
+    assert shifted.words[0].start == pytest.approx(11.0)
+    assert shifted.words[0].end == pytest.approx(12.0)
+    assert shifted.words[1].start == pytest.approx(12.5)
+    assert shifted.words[1].end == pytest.approx(13.5)
+
+
+def test_offset_segment_no_words():
+    """Segment without words still gets shifted timestamps."""
+    seg = make_seg(words=None, start=5.0, end=8.0)
+    shifted = _offset_segment(seg, 100.0)
+    assert shifted.start == pytest.approx(105.0)
+    assert shifted.end == pytest.approx(108.0)
+    assert shifted.words is None
+
+
+def test_offset_segment_preserves_other_fields():
+    """Non-timestamp fields are preserved through the offset."""
+    seg = make_seg(words=[w(" hi", 0.0, 1.0, 0.95)], text=" hi",
+                   avg_logprob=-0.3, no_speech_prob=0.05)
+    shifted = _offset_segment(seg, 5.0)
+    assert shifted.text == " hi"
+    assert shifted.avg_logprob == pytest.approx(-0.3)
+    assert shifted.no_speech_prob == pytest.approx(0.05)
+    assert shifted.words[0].probability == pytest.approx(0.95)

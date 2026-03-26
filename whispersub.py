@@ -126,10 +126,23 @@ def _surround_mix_weights(channel_names: list[str]) -> np.ndarray:
     return weights / weights.sum()
 
 
-# Frequently hallucinated strings to filter out
+# Frequently hallucinated strings to filter out.  Matching is case-insensitive
+# and ignores leading/trailing whitespace and punctuation so that minor Whisper
+# variations (e.g. trailing period vs none) don't slip through.
 _KNOWN_HALLUCINATIONS: Final = frozenset({
-    "Субтитры создавал DimaTorzok",  # https://github.com/openai/whisper/discussions/2372
+    "субтитры создавал dimatorzok",   # https://github.com/openai/whisper/discussions/2372
+    "다음 영상에서 만나요",             # "See you in the next video" (Korean YouTube outro)
 })
+
+
+def _normalize_text(text: str) -> str:
+    """Lower-case and strip whitespace + sentence-final punctuation for comparison."""
+    return text.strip().lower().rstrip(".,!?;:。！？")
+
+
+def is_hallucination(text: str) -> bool:
+    """Return True if *text* matches a known Whisper hallucination."""
+    return _normalize_text(text) in _KNOWN_HALLUCINATIONS
 
 # ---------------------------------------------------------------------------
 # GPU / CUDA helpers
@@ -602,7 +615,7 @@ def build_subs(
     task_progress = progress.add_task("Transcribing:", total=info.duration, total_label=f"{int(info.duration / 60)} minutes")
     for seg_id, seg in enumerate(itertools.islice(segments, limit)):
         seg.words = merge_tokens(seg.words or [])
-        if seg.text.strip() in _KNOWN_HALLUCINATIONS:
+        if is_hallucination(seg.text):
             progress.console.print(f"{format_segment_for_console(seg, colour_by)} [bold red](ignoring known hallucination)[/]")
             continue
         if comment := make_segment_comment(seg, seg_id):
