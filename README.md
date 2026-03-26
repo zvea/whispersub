@@ -53,7 +53,8 @@ whispersub series.mkv --audio-track 2
 | `--list-audio-tracks` | off | Show audio tracks for all input videos, grouped by configuration, and exit |
 | `--colour-by` | `probability` | Per-word terminal colour coding: `probability` or `duration` |
 | `--font-size N` | `48` | Font size (1280×720 canvas; player scales to actual resolution) |
-| `--force` | off | Overwrite existing subtitle files |
+| `--force` | off | Overwrite existing subtitle files (keeps backups) |
+| `--keep N` | `3` | Number of `.bak` copies to keep when overwriting |
 | `--limit N` | — | Stop after N segments per video (useful for testing) |
 | `--max-line-count N` | `2` | Maximum subtitle lines per card |
 | `--max-line-width N` | `36` | Maximum characters per line |
