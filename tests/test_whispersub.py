@@ -9,7 +9,7 @@ import pysubs2
 import pytest
 from faster_whisper.transcribe import Segment, Word
 
-from whispersub import AssCommentPayload, _cuda_encode_works, _offset_segment, _surround_mix_weights, _transcribe_with_retry, collect_videos, is_hallucination, load_model, main, make_event, make_line_groups, make_segment_comment, merge_tokens, seg_to_events, validate_audio_tracks
+from whispersub import AssCommentPayload, _cuda_encode_works, _detect_drift, _offset_segment, _surround_mix_weights, _transcribe_with_retry, collect_videos, is_hallucination, load_model, main, make_event, make_line_groups, make_segment_comment, merge_tokens, seg_to_events, validate_audio_tracks
 
 
 def w(word: str, start: float = 0.0, end: float = 1.0, prob: float = 0.9) -> Word:
@@ -879,14 +879,14 @@ def _fake_transcribe(pass_segments: list[list[Segment]]):
 def test_retry_no_drift():
     """When no gap exceeds the threshold, all segments are yielded with no retry."""
     segs = [
-        make_seg(words=None, start=0.0, end=5.0),
-        make_seg(words=None, start=6.0, end=10.0),
-        make_seg(words=None, start=12.0, end=15.0),
+        make_seg(words=None, start=0.0, end=5.0, text="one"),
+        make_seg(words=None, start=6.0, end=10.0, text="two"),
+        make_seg(words=None, start=12.0, end=15.0, text="three"),
     ]
     model = _fake_transcribe([segs])
     audio = np.zeros(20 * 16_000, dtype=np.float32)
 
-    result = list(_transcribe_with_retry(audio, model, {}, progress=_mock_progress()))
+    result = list(_transcribe_with_retry(audio, model, {}, language=None, progress=_mock_progress()))
 
     assert len(result) == 3
     assert model.transcribe.call_count == 1
@@ -899,19 +899,19 @@ def test_retry_resets_on_drift():
     """A gap > threshold triggers a retry; second pass fills in the missing region."""
     # Pass 1: two segments, then a 60s gap → drift detected after seg at 10.0
     pass1 = [
-        make_seg(words=None, start=0.0, end=5.0),
-        make_seg(words=None, start=6.0, end=10.0),
-        make_seg(words=None, start=70.0, end=75.0),  # drift: gap=60s
+        make_seg(words=None, start=0.0, end=5.0, text="seg one"),
+        make_seg(words=None, start=6.0, end=10.0, text="seg two"),
+        make_seg(words=None, start=70.0, end=75.0, text="drifted"),  # drift: gap=60s
     ]
     # Pass 2: starts from offset=10.0, produces segments in the previously-missed region
     pass2 = [
-        make_seg(words=None, start=1.0, end=5.0),    # 10+1=11 in original
-        make_seg(words=None, start=8.0, end=12.0),   # 10+8=18 in original
+        make_seg(words=None, start=1.0, end=5.0, text="seg three"),    # 10+1=11 in original
+        make_seg(words=None, start=8.0, end=12.0, text="seg four"),   # 10+8=18 in original
     ]
     model = _fake_transcribe([pass1, pass2])
     audio = np.zeros(120 * 16_000, dtype=np.float32)
 
-    result = list(_transcribe_with_retry(audio, model, {}, progress=_mock_progress()))
+    result = list(_transcribe_with_retry(audio, model, {}, language=None, progress=_mock_progress()))
 
     assert model.transcribe.call_count == 2
     # Pass 1 yielded 2 segments, pass 2 yielded 2 (offset-adjusted)
@@ -926,18 +926,18 @@ def test_retry_skips_when_no_speech_before_gap():
     """When retry also starts with a gap, skip ahead instead of looping."""
     # Pass 1: first segment starts at 50s → gap from 0, drift detected, no yield
     pass1 = [
-        make_seg(words=None, start=50.0, end=55.0),
+        make_seg(words=None, start=50.0, end=55.0, text="far away"),
     ]
     # Pass 2: starts from offset=50.0, produces normal output
     pass2 = [
-        make_seg(words=None, start=0.0, end=3.0),
-        make_seg(words=None, start=4.0, end=8.0),
+        make_seg(words=None, start=0.0, end=3.0, text="seg one"),
+        make_seg(words=None, start=4.0, end=8.0, text="seg two"),
     ]
     model = _fake_transcribe([pass1, pass2])
     audio = np.zeros(120 * 16_000, dtype=np.float32)
     progress = _mock_progress()
 
-    result = list(_transcribe_with_retry(audio, model, {}, progress=progress))
+    result = list(_transcribe_with_retry(audio, model, {}, language=None, progress=progress))
 
     assert model.transcribe.call_count == 2
     assert len(result) == 2
@@ -956,7 +956,7 @@ def test_retry_empty_pass_terminates():
     model = _fake_transcribe([[]])
     audio = np.zeros(60 * 16_000, dtype=np.float32)
 
-    result = list(_transcribe_with_retry(audio, model, {}, progress=_mock_progress()))
+    result = list(_transcribe_with_retry(audio, model, {}, language=None, progress=_mock_progress()))
 
     assert result == []
     assert model.transcribe.call_count == 1
@@ -967,7 +967,7 @@ def test_retry_short_audio_skipped():
     model = _fake_transcribe([])
     audio = np.zeros(8000, dtype=np.float32)  # 0.5s
 
-    result = list(_transcribe_with_retry(audio, model, {}, progress=_mock_progress()))
+    result = list(_transcribe_with_retry(audio, model, {}, language=None, progress=_mock_progress()))
 
     assert result == []
     assert model.transcribe.call_count == 0
@@ -977,22 +977,22 @@ def test_retry_multiple_drifts():
     """Multiple drift resets in sequence all recover correctly."""
     # Pass 1: one segment then drift
     pass1 = [
-        make_seg(words=None, start=0.0, end=5.0),
-        make_seg(words=None, start=60.0, end=65.0),  # drift
+        make_seg(words=None, start=0.0, end=5.0, text="seg one"),
+        make_seg(words=None, start=60.0, end=65.0, text="drifted"),  # drift
     ]
     # Pass 2: from offset=5.0, one segment then another drift
     pass2 = [
-        make_seg(words=None, start=0.0, end=4.0),
-        make_seg(words=None, start=50.0, end=55.0),  # drift again
+        make_seg(words=None, start=0.0, end=4.0, text="seg two"),
+        make_seg(words=None, start=50.0, end=55.0, text="drifted again"),  # drift again
     ]
     # Pass 3: from offset=9.0, normal completion
     pass3 = [
-        make_seg(words=None, start=0.0, end=3.0),
+        make_seg(words=None, start=0.0, end=3.0, text="seg three"),
     ]
     model = _fake_transcribe([pass1, pass2, pass3])
     audio = np.zeros(120 * 16_000, dtype=np.float32)
 
-    result = list(_transcribe_with_retry(audio, model, {}, progress=_mock_progress()))
+    result = list(_transcribe_with_retry(audio, model, {}, language=None, progress=_mock_progress()))
 
     assert model.transcribe.call_count == 3
     assert len(result) == 3
@@ -1016,9 +1016,293 @@ def test_retry_offsets_words():
     model = _fake_transcribe([pass1, pass2])
     audio = np.zeros(60 * 16_000, dtype=np.float32)
 
-    result = list(_transcribe_with_retry(audio, model, {}, progress=_mock_progress()))
+    result = list(_transcribe_with_retry(audio, model, {}, language=None, progress=_mock_progress()))
 
     assert len(result) == 2
     assert result[0].words[0].start == pytest.approx(0.0)  # no offset
     assert result[1].words[0].start == pytest.approx(3.0)  # 1.0 + offset 2.0
     assert result[1].words[0].end == pytest.approx(5.0)    # 3.0 + offset 2.0
+
+
+# ---------------------------------------------------------------------------
+# _detect_drift
+# ---------------------------------------------------------------------------
+
+
+def test_detect_drift_gap():
+    """A gap exceeding _DRIFT_THRESHOLD is detected."""
+    seg = make_seg(words=None, start=40.0, end=42.0, text="hello")
+    assert _detect_drift(seg, 5.0, language="de", recent_texts=[]) == "gap"
+
+
+def test_detect_drift_no_gap():
+    """A small gap does not trigger drift."""
+    seg = make_seg(words=None, start=8.0, end=10.0, text="hello")
+    assert _detect_drift(seg, 5.0, language="de", recent_texts=[]) is None
+
+
+def test_detect_drift_script_mismatch_cyrillic_in_german():
+    """Cyrillic text in a German transcription is detected as script drift."""
+    seg = make_seg(words=None, start=1.0, end=2.0, text="О, ты шесть.")
+    assert _detect_drift(seg, 0.0, language="de", recent_texts=[]) == "script"
+
+
+def test_detect_drift_script_mismatch_cjk_in_german():
+    """CJK text in a German transcription is detected as script drift."""
+    seg = make_seg(words=None, start=1.0, end=2.0, text="ご視聴ありがとうございました")
+    assert _detect_drift(seg, 0.0, language="de", recent_texts=[]) == "script"
+
+
+def test_detect_drift_script_mismatch_korean_in_english():
+    """Korean text in an English transcription is detected as script drift."""
+    seg = make_seg(words=None, start=1.0, end=2.0, text="다음 영상에서 만나요")
+    assert _detect_drift(seg, 0.0, language="en", recent_texts=[]) == "script"
+
+
+def test_detect_drift_script_mismatch_mixed_in_latin():
+    """CJK characters embedded in Latin text are detected."""
+    seg = make_seg(words=None, start=1.0, end=2.0, text="Die Frau hat ja こんにちは ein Problem.")
+    assert _detect_drift(seg, 0.0, language="de", recent_texts=[]) == "script"
+
+
+def test_detect_drift_no_script_check_for_non_latin_language():
+    """Non-Latin script in a non-Latin language (e.g. Japanese) is not flagged."""
+    seg = make_seg(words=None, start=1.0, end=2.0, text="ご視聴ありがとうございました")
+    assert _detect_drift(seg, 0.0, language="ja", recent_texts=[]) is None
+
+
+def test_detect_drift_no_script_check_for_none_language():
+    """When language is None, script check is skipped."""
+    seg = make_seg(words=None, start=1.0, end=2.0, text="ご視聴ありがとうございました")
+    assert _detect_drift(seg, 0.0, language=None, recent_texts=[]) is None
+
+
+def test_detect_drift_latin_in_latin_language_ok():
+    """Normal Latin text in a Latin language is not flagged."""
+    seg = make_seg(words=None, start=1.0, end=2.0, text="Büro ist wie Achterbahnfahren.")
+    assert _detect_drift(seg, 0.0, language="de", recent_texts=[]) is None
+
+
+def test_detect_drift_echo():
+    """Same text appearing 3+ times in recent history triggers echo detection."""
+    seg = make_seg(words=None, start=5.0, end=6.0, text="Ich bin gut gegangen.")
+    recent = ["Ich bin gut gegangen.", "Ich bin gut gegangen.", "Ich bin gut gegangen."]
+    assert _detect_drift(seg, 4.0, language="de", recent_texts=recent) == "echo"
+
+
+def test_detect_drift_echo_below_threshold():
+    """Same text appearing fewer than 3 times does not trigger echo."""
+    seg = make_seg(words=None, start=5.0, end=6.0, text="Ich bin gut gegangen.")
+    recent = ["Ich bin gut gegangen.", "Ich bin gut gegangen."]
+    assert _detect_drift(seg, 4.0, language="de", recent_texts=recent) is None
+
+
+def test_detect_drift_echo_different_text():
+    """Repeated text that doesn't match the current segment is not flagged."""
+    seg = make_seg(words=None, start=5.0, end=6.0, text="Something new.")
+    recent = ["Repeated.", "Repeated.", "Repeated."]
+    assert _detect_drift(seg, 4.0, language="de", recent_texts=recent) is None
+
+
+def test_detect_drift_gap_takes_priority():
+    """Gap detection fires before script or echo checks."""
+    seg = make_seg(words=None, start=50.0, end=52.0, text="ご視聴ありがとうございました")
+    assert _detect_drift(seg, 5.0, language="de", recent_texts=[]) == "gap"
+
+
+# ---------------------------------------------------------------------------
+# _transcribe_with_retry — script mismatch
+# ---------------------------------------------------------------------------
+
+
+def test_retry_resets_on_script_mismatch():
+    """Non-Latin text in a Latin-language file triggers a retry."""
+    pass1 = [
+        make_seg(words=None, start=0.0, end=5.0, text="Guten Tag."),
+        make_seg(words=None, start=6.0, end=8.0, text="ご視聴ありがとうございました"),  # script drift
+    ]
+    pass2 = [
+        make_seg(words=None, start=0.0, end=4.0, text="Auf Wiedersehen."),
+    ]
+    model = _fake_transcribe([pass1, pass2])
+    audio = np.zeros(60 * 16_000, dtype=np.float32)
+    progress = _mock_progress()
+
+    result = list(_transcribe_with_retry(audio, model, {}, language="de", progress=progress))
+
+    assert model.transcribe.call_count == 2
+    assert len(result) == 2
+    assert result[0].text == "Guten Tag."
+    assert result[1].text == "Auf Wiedersehen."
+    assert result[1].start == pytest.approx(5.0)  # offset from pass 1 end
+    # Verify drift message mentions "script"
+    script_calls = [c for c in progress.console.print.call_args_list
+                    if "script" in str(c)]
+    assert len(script_calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# _transcribe_with_retry — echo detection
+# ---------------------------------------------------------------------------
+
+
+def test_retry_resets_on_echo():
+    """Same text repeated 3+ times triggers a retry.
+
+    Echo fires when recent_texts already contains _ECHO_THRESHOLD copies,
+    so the 4th occurrence is the one that triggers it (3 already in history).
+    """
+    pass1 = [
+        make_seg(words=None, start=0.0, end=2.0, text="Normal speech."),
+        make_seg(words=None, start=3.0, end=4.0, text="Ich bin gut gegangen."),
+        make_seg(words=None, start=5.0, end=6.0, text="Ich bin gut gegangen."),
+        make_seg(words=None, start=7.0, end=8.0, text="Ich bin gut gegangen."),
+        make_seg(words=None, start=9.0, end=10.0, text="Ich bin gut gegangen."),  # 4th: 3 in history → echo
+    ]
+    pass2 = [
+        make_seg(words=None, start=0.0, end=3.0, text="Fresh decoder output."),
+    ]
+    model = _fake_transcribe([pass1, pass2])
+    audio = np.zeros(60 * 16_000, dtype=np.float32)
+    progress = _mock_progress()
+
+    result = list(_transcribe_with_retry(audio, model, {}, language="de", progress=progress))
+
+    assert model.transcribe.call_count == 2
+    # 4 segments yielded (normal + 3 repeats), 4th repeat triggers reset
+    assert len(result) == 5  # 4 from pass1 + 1 from pass2
+    assert result[0].text == "Normal speech."
+    assert result[1].text == "Ich bin gut gegangen."
+    assert result[3].text == "Ich bin gut gegangen."
+    assert result[4].text == "Fresh decoder output."
+    # Verify drift message mentions "echo"
+    echo_calls = [c for c in progress.console.print.call_args_list
+                  if "echo" in str(c)]
+    assert len(echo_calls) == 1
+
+
+def test_retry_script_mismatch_as_first_segment():
+    """Non-Latin text as the very first segment skips ahead (like S02E10 Korean at 1:40)."""
+    pass1 = [
+        make_seg(words=None, start=0.0, end=2.0, text="나이탈리아"),  # script drift, no prior good segment
+    ]
+    pass2 = [
+        make_seg(words=None, start=0.0, end=5.0, text="Das konnte ich nicht wissen."),
+    ]
+    model = _fake_transcribe([pass1, pass2])
+    audio = np.zeros(60 * 16_000, dtype=np.float32)
+    progress = _mock_progress()
+
+    result = list(_transcribe_with_retry(audio, model, {}, language="de", progress=progress))
+
+    assert model.transcribe.call_count == 2
+    assert len(result) == 1
+    assert result[0].text == "Das konnte ich nicht wissen."
+    # Should have skipped to where the bad segment was
+    assert result[0].start == pytest.approx(0.0)  # retry from seg.start=0.0, new seg at 0.0
+    # Verify skip message
+    skip_calls = [c for c in progress.console.print.call_args_list
+                  if "no speech" in str(c)]
+    assert len(skip_calls) == 1
+
+
+def test_retry_script_mismatch_retry_also_fails():
+    """When retry also produces non-Latin as first segment, skip past it (like 고춧가루 over a 'Hm.')."""
+    # Pass 1: normal then script drift
+    pass1 = [
+        make_seg(words=None, start=0.0, end=5.0, text="Normaler Text."),
+        make_seg(words=None, start=6.0, end=7.0, text="고춧가루"),  # script drift
+    ]
+    # Pass 2: retry from 5.0, also produces non-Latin first
+    pass2 = [
+        make_seg(words=None, start=2.0, end=3.0, text="고춧가루"),  # still bad
+    ]
+    # Pass 3: skip to 7.0 (5.0 + 2.0), fresh start works
+    pass3 = [
+        make_seg(words=None, start=0.0, end=4.0, text="Weiter gehts."),
+    ]
+    model = _fake_transcribe([pass1, pass2, pass3])
+    audio = np.zeros(60 * 16_000, dtype=np.float32)
+
+    result = list(_transcribe_with_retry(audio, model, {}, language="de", progress=_mock_progress()))
+
+    assert model.transcribe.call_count == 3
+    assert len(result) == 2
+    assert result[0].text == "Normaler Text."
+    assert result[1].text == "Weiter gehts."
+
+
+def test_retry_echo_persists_across_retry_boundary():
+    """recent_texts carries across retries so echo from before a gap still counts.
+
+    Pass 1 yields 2 copies of "Looping text." then hits a gap.
+    Pass 2 retries and yields a 3rd copy — now 3 in history — then the 4th triggers echo.
+    """
+    # Pass 1: two repeats, then a gap triggers drift
+    pass1 = [
+        make_seg(words=None, start=0.0, end=2.0, text="Looping text."),
+        make_seg(words=None, start=3.0, end=4.0, text="Looping text."),
+        make_seg(words=None, start=50.0, end=52.0, text="Far away."),  # gap drift
+    ]
+    # Pass 2: retry from 4.0, produces same text — 3rd yields, 4th triggers echo
+    pass2 = [
+        make_seg(words=None, start=0.0, end=2.0, text="Looping text."),  # 3rd overall, yields
+        make_seg(words=None, start=3.0, end=4.0, text="Looping text."),  # 4th: 3 in history → echo
+    ]
+    # Pass 3: retry, fresh
+    pass3 = [
+        make_seg(words=None, start=0.0, end=3.0, text="Finally different."),
+    ]
+    model = _fake_transcribe([pass1, pass2, pass3])
+    audio = np.zeros(120 * 16_000, dtype=np.float32)
+    progress = _mock_progress()
+
+    result = list(_transcribe_with_retry(audio, model, {}, language="de", progress=progress))
+
+    assert model.transcribe.call_count == 3
+    assert len(result) == 4  # 2 from pass1, 1 from pass2, 1 from pass3
+    assert result[0].text == "Looping text."
+    assert result[1].text == "Looping text."
+    assert result[2].text == "Looping text."
+    assert result[3].text == "Finally different."
+    # Should see both gap and echo drift messages
+    gap_calls = [c for c in progress.console.print.call_args_list if "gap" in str(c)]
+    echo_calls = [c for c in progress.console.print.call_args_list if "echo" in str(c)]
+    assert len(gap_calls) >= 1
+    assert len(echo_calls) >= 1
+
+
+def test_retry_cyrillic_triggers_script_mismatch():
+    """Cyrillic in a German file triggers script drift (like S01E06 'О, ты шесть')."""
+    pass1 = [
+        make_seg(words=None, start=0.0, end=5.0, text="Vielen Dank."),
+        make_seg(words=None, start=6.0, end=8.0, text="О, ты шесть."),  # Cyrillic
+    ]
+    pass2 = [
+        make_seg(words=None, start=0.0, end=3.0, text="Herr Stromberg!"),
+    ]
+    model = _fake_transcribe([pass1, pass2])
+    audio = np.zeros(60 * 16_000, dtype=np.float32)
+
+    result = list(_transcribe_with_retry(audio, model, {}, language="de", progress=_mock_progress()))
+
+    assert model.transcribe.call_count == 2
+    assert len(result) == 2
+    assert result[0].text == "Vielen Dank."
+    assert result[1].text == "Herr Stromberg!"
+
+
+def test_retry_no_script_check_for_japanese_language():
+    """Japanese text in a Japanese-language transcription does not trigger drift."""
+    segs = [
+        make_seg(words=None, start=0.0, end=5.0, text="こんにちは"),
+        make_seg(words=None, start=6.0, end=10.0, text="ありがとうございます"),
+        make_seg(words=None, start=12.0, end=15.0, text="さようなら"),
+    ]
+    model = _fake_transcribe([segs])
+    audio = np.zeros(20 * 16_000, dtype=np.float32)
+
+    result = list(_transcribe_with_retry(audio, model, {}, language="ja", progress=_mock_progress()))
+
+    assert model.transcribe.call_count == 1
+    assert len(result) == 3

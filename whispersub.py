@@ -472,14 +472,28 @@ def extract_audio(video: Path, stream_index: int = 0, *, progress: Progress) -> 
 
 
 _DRIFT_THRESHOLD: Final = 30
-"""Seconds of silence between segments before assuming the decoder has drifted.
+"""Seconds of gap between segments before assuming the decoder has drifted."""
 
-When the gap between two consecutive segments exceeds this value the current
-transcription pass is abandoned and a fresh one starts from the beginning of
-the gap.  This recovers from Whisper's attention-based decoder losing its
-position in long audio without relying on VAD pre-filtering (which can drop
-speech).
-"""
+_ECHO_THRESHOLD: Final = 3
+"""Number of times a segment text must repeat in recent history to be considered an echo."""
+
+# Scripts that use Latin characters.  When the detected language uses one of
+# these scripts, non-Latin characters (CJK, Cyrillic, Hangul, etc.) in a
+# segment are treated as a sign of decoder drift.
+_LATIN_SCRIPT_LANGUAGES: Final = frozenset({
+    "af", "az", "bs", "ca", "cs", "cy", "da", "de", "en", "es", "et", "eu",
+    "fi", "fr", "gl", "hr", "hu", "id", "is", "it", "jw", "la", "lt", "lv",
+    "mg", "ms", "mt", "nl", "nn", "no", "oc", "pl", "pt", "ro", "sk", "sl",
+    "sq", "sv", "sw", "tl", "tr", "vi",
+})
+
+_NON_LATIN_RE: Final = re.compile(
+    r"[\u0400-\u04ff"   # Cyrillic
+    r"\u3000-\u9fff"    # CJK Unified Ideographs + symbols
+    r"\u3040-\u309f"    # Hiragana
+    r"\u30a0-\u30ff"    # Katakana
+    r"\uac00-\ud7af]"   # Hangul
+)
 
 
 def _offset_segment(seg: Segment, offset: float) -> Segment:
@@ -490,24 +504,54 @@ def _offset_segment(seg: Segment, offset: float) -> Segment:
     return dataclasses.replace(seg, start=seg.start + offset, end=seg.end + offset, words=words)
 
 
+def _detect_drift(
+    seg: Segment,
+    last_end: float,
+    *,
+    language: str | None,
+    recent_texts: list[str],
+) -> str | None:
+    """Return a short reason string if *seg* looks like decoder drift, else None."""
+    # 1. Large gap between segments
+    if seg.start - last_end > _DRIFT_THRESHOLD:
+        return "gap"
+
+    text = seg.text.strip()
+
+    # 2. Non-Latin script in a Latin-script language
+    if language in _LATIN_SCRIPT_LANGUAGES and _NON_LATIN_RE.search(text):
+        return "script"
+
+    # 3. Exact text repeated too many times recently
+    if recent_texts.count(text) >= _ECHO_THRESHOLD:
+        return "echo"
+
+    return None
+
+
 def _transcribe_with_retry(
     audio: np.ndarray,
     model: WhisperModel,
     kwargs: dict,
     *,
+    language: str | None,
     progress: Progress,
 ) -> Iterator[Segment]:
     """Yield segments, retrying from a fresh decoder state when drift is detected.
 
-    Drift is detected when consecutive segments are separated by more than
-    _DRIFT_THRESHOLD seconds.  On retry the audio is sliced from the start of
-    the gap so the decoder gets a fresh context.  To avoid infinite loops, if a
-    retry produces no output before the same drift point the gap is skipped and
-    the next region is tried.
+    Drift is detected by any of:
+    - A gap > _DRIFT_THRESHOLD seconds between consecutive segments.
+    - Non-Latin characters in a Latin-language transcription (script mismatch).
+    - The same segment text appearing _ECHO_THRESHOLD times in recent output.
+
+    On drift the current pass is abandoned and a fresh transcription starts from
+    the last known-good position.  To avoid infinite loops, if a retry produces
+    no output before the same point the gap is skipped.
     """
     sample_rate = 16_000
     total_duration = len(audio) / sample_rate
     offset = 0.0  # cumulative offset into the original audio
+    recent_texts: list[str] = []  # rolling window for echo detection
 
     while offset < total_duration:
         start_sample = int(offset * sample_rate)
@@ -520,27 +564,31 @@ def _transcribe_with_retry(
         yielded_any = False
 
         for seg in segments:
-            gap = seg.start - last_end
-            if gap > _DRIFT_THRESHOLD:
-                # Decoder likely drifted.  Restart from where output stopped.
+            reason = _detect_drift(
+                seg, last_end, language=language, recent_texts=recent_texts,
+            )
+            if reason:
                 drift_point = offset + last_end
                 if not yielded_any:
-                    # Retry produced nothing before the same gap — skip ahead
-                    # to the segment the decoder jumped to, to avoid looping.
+                    # Retry produced nothing before the same point — skip ahead.
                     progress.console.print(
-                        f"  [yellow]Drift:[/yellow] no speech in "
+                        f"  [yellow]Drift ({reason}):[/yellow] no speech in "
                         f"{fmt_time(offset)}–{fmt_time(offset + seg.start)}, skipping"
                     )
                     offset = offset + seg.start
                 else:
                     progress.console.print(
-                        f"  [yellow]Drift:[/yellow] resetting decoder at {fmt_time(drift_point)}"
+                        f"  [yellow]Drift ({reason}):[/yellow] resetting decoder at {fmt_time(drift_point)}"
                     )
                     offset = drift_point
                 break  # abandon this pass, retry from new offset
             yield _offset_segment(seg, offset)
             last_end = seg.end
             yielded_any = True
+            text = seg.text.strip()
+            recent_texts.append(text)
+            if len(recent_texts) > 10:
+                recent_texts.pop(0)
         else:
             # Generator exhausted normally — we're done.
             break
@@ -554,7 +602,7 @@ def transcribe(video: Path, model: WhisperModel, stream_index: int, *, progress:
     # Wrap in the drift-retry generator; the first pass's segments feed into it
     # but we need to call transcribe fresh on retry, so we pass audio + kwargs.
     # Re-do the initial call inside the generator for uniform handling.
-    return _transcribe_with_retry(audio, model, kwargs, progress=progress), info
+    return _transcribe_with_retry(audio, model, kwargs, language=info.language, progress=progress), info
 
 
 def set_script_info(subs: pysubs2.SSAFile, info: TranscriptionInfo, video: Path) -> None:
