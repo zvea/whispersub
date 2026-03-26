@@ -1,6 +1,6 @@
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import av.error
 import numpy as np
@@ -8,7 +8,7 @@ import pysubs2
 import pytest
 from faster_whisper.transcribe import Segment, Word
 
-from whispersub import _surround_mix_weights, collect_videos, main, make_event, make_line_groups, merge_tokens, seg_to_events, validate_audio_tracks
+from whispersub import _cuda_encode_works, _surround_mix_weights, collect_videos, load_model, main, make_event, make_line_groups, merge_tokens, seg_to_events, validate_audio_tracks
 
 
 def w(word: str, start: float = 0.0, end: float = 1.0, prob: float = 0.9) -> Word:
@@ -641,3 +641,67 @@ def test_surround_mix_weights_mix_arithmetic():
     mono = (frame * weights[:, np.newaxis]).sum(axis=0)
 
     assert mono[0] == pytest.approx(weights[channels.index("FC")])
+
+
+# ---------------------------------------------------------------------------
+# _cuda_encode_works / load_model CUDA fallback
+# ---------------------------------------------------------------------------
+
+
+def test_cuda_encode_works_returns_true_when_encode_succeeds():
+    """Smoke test passes when detect_language succeeds."""
+    model = MagicMock()
+    model.detect_language.return_value = ("en", 0.9, [("en", 0.9)])
+    assert _cuda_encode_works(model) is True
+    model.detect_language.assert_called_once()
+
+
+def test_cuda_encode_works_returns_false_on_runtime_error():
+    """Smoke test catches RuntimeError from missing CUDA libs."""
+    model = MagicMock()
+    model.detect_language.side_effect = RuntimeError("cublas64_12.dll not found or cannot be loaded")
+    assert _cuda_encode_works(model) is False
+
+
+def test_load_model_falls_back_to_cpu_when_encode_fails():
+    """load_model retries with device='cpu' when the CUDA smoke test fails."""
+    gpu_model = MagicMock()
+    cpu_model = MagicMock()
+
+    # First WhisperModel() call returns gpu_model; second returns cpu_model
+    with (
+        patch("whispersub.WhisperModel", side_effect=[gpu_model, cpu_model]) as mock_cls,
+        patch("whispersub._cuda_encode_works", return_value=False),
+        patch("whispersub.console"),
+    ):
+        result = load_model(max_threads=None)
+
+    assert result is cpu_model
+    # Second call should explicitly request CPU
+    assert mock_cls.call_count == 2
+    _, kwargs = mock_cls.call_args_list[1]
+    assert kwargs["device"] == "cpu"
+
+
+def test_load_model_keeps_gpu_when_encode_succeeds():
+    """load_model returns the GPU model when the smoke test passes."""
+    gpu_model = MagicMock()
+
+    with (
+        patch("whispersub.WhisperModel", return_value=gpu_model),
+        patch("whispersub._cuda_encode_works", return_value=True),
+        patch("whispersub.console"),
+    ):
+        result = load_model(max_threads=None)
+
+    assert result is gpu_model
+
+
+def test_load_model_reraises_unrelated_runtime_errors():
+    """RuntimeErrors not about missing libs propagate instead of falling back."""
+    with (
+        patch("whispersub.WhisperModel", side_effect=RuntimeError("out of memory")),
+        patch("whispersub.console"),
+        pytest.raises(RuntimeError, match="out of memory"),
+    ):
+        load_model(max_threads=None)

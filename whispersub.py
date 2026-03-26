@@ -682,19 +682,37 @@ def cmd_list_audio_tracks(videos: list[Path]) -> None:
             console.print(f"  {error}")
 
 
+def _cuda_encode_works(model: WhisperModel) -> bool:
+    """Return True if the model can actually run a forward pass on its device.
+
+    Some Windows installs detect CUDA at model-load time but lack runtime
+    libraries (e.g. cublas64_12.dll) that are only exercised during inference.
+    A tiny detect_language smoke-test catches this early so we can fall back
+    to CPU.
+    """
+    try:
+        model.detect_language(np.zeros(16000, dtype=np.float32))
+        return True
+    except RuntimeError:
+        return False
+
+
 def load_model(max_threads: int | None) -> WhisperModel:
     """Load the Whisper model, falling back to CPU if GPU/CUDA is unavailable."""
     console.print(Rule(f"Loading model: {_MODEL}"))
     if sys.platform == "win32":
         _register_nvidia_dll_directories()
     try:
-        return WhisperModel(_MODEL, compute_type="int8", cpu_threads=max_threads or 0)
+        model = WhisperModel(_MODEL, compute_type="int8", cpu_threads=max_threads or 0)
+        if not _cuda_encode_works(model):
+            raise RuntimeError("CUDA runtime library not found or cannot be loaded")
+        return model
     except RuntimeError as exc:
         if "not found or cannot be loaded" not in str(exc):
             raise
         console.print(
             "[yellow]Warning:[/yellow] GPU/CUDA unavailable, falling back to CPU.\n"
-            "For GPU support: install CUDA 12 (nvidia.com/cuda-downloads)"
+            "For GPU support: install CUDA 12 (developer.nvidia.com/cuda-downloads)"
             " or run: [bold]pip install whispersub\\[gpu][/bold]"
         )
         return WhisperModel(_MODEL, device="cpu", compute_type="int8", cpu_threads=max_threads or 0)
