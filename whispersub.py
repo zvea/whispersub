@@ -135,6 +135,7 @@ _KNOWN_HALLUCINATIONS: Final = frozenset({
     "субтитры подогнал «симон»",      # "Subtitles by Simon" (Russian attribution)
     "продолжение следует",            # "To be continued" (Russian)
     "다음 영상에서 만나요",             # "See you in the next video" (Korean YouTube outro)
+    "한글자막 by 박진희",              # "Korean subtitles by Park Jinhee" (Korean attribution)
     "ご視聴ありがとうございました",      # "Thank you for watching" (Japanese YouTube outro)
 })
 
