@@ -1397,3 +1397,49 @@ def test_retry_no_script_check_for_japanese_language():
     assert model.transcribe.call_count == 1
     assert len(kept) == 3
     assert len(discarded) == 0
+
+
+def test_retry_script_mismatch_at_same_position_does_not_loop():
+    """Script drift at the start of every retry must not loop forever.
+
+    Reproduces the bug where retry keeps producing a non-Latin segment at
+    seg.start=0.0, so offset never advances (S01E07 end-credits loop).
+    After a bounded number of retries the generator must terminate.
+    """
+    # Every pass produces the same non-Latin segment at position 0
+    bad_seg = make_seg(words=None, start=0.0, end=2.0, text="ご視聴ありがとうございました")
+    passes = [[bad_seg]] * 50  # more than enough to detect a loop
+    model = _fake_transcribe(passes)
+    audio = np.zeros(30 * 16_000, dtype=np.float32)  # 30s
+
+    kept, discarded = _collect_retry(audio, model, language="de", progress=_mock_progress())
+
+    assert len(kept) == 0
+    # Should have terminated, not run all 50 passes
+    assert model.transcribe.call_count < 20
+
+
+def test_retry_script_drift_near_end_terminates():
+    """Script drift in the last few seconds of audio terminates cleanly.
+
+    Like S01E07: good German dialogue until 23:56, then non-Latin at 24:06
+    in a 24:39 file. After skipping past it, < 1s remains and we stop.
+    """
+    pass1 = [
+        make_seg(words=None, start=0.0, end=5.0, text="Normal German."),
+        make_seg(words=None, start=6.0, end=8.0, text="マンナー"),  # script drift
+    ]
+    # Retry from 5.0, produces non-Latin at the end
+    pass2 = [
+        make_seg(words=None, start=3.0, end=4.0, text="ご視聴ありがとうございました"),
+    ]
+    model = _fake_transcribe([pass1, pass2])
+    # Audio is only 10s — after skipping to ~8.0, less than 1s remains
+    audio = np.zeros(10 * 16_000, dtype=np.float32)
+
+    kept, discarded = _collect_retry(audio, model, language="de", progress=_mock_progress())
+
+    assert len(kept) == 1
+    assert kept[0].text == "Normal German."
+    # 3 calls: initial, retry from 5.0 (bad seg), final from 9.0 (empty)
+    assert model.transcribe.call_count <= 3

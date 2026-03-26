@@ -580,11 +580,16 @@ def _transcribe_with_retry(
                 drift_point = offset + last_end
                 if not yielded_any:
                     # Retry produced nothing before the same point — skip ahead.
+                    # For gap drift seg.start is already large (> threshold).
+                    # For script/echo seg.start can be 0, so use seg.end to
+                    # guarantee we advance past the bad segment.
+                    advance = seg.start if reason == "gap" else seg.end
+                    skip_to = offset + advance
                     progress.console.print(
                         f"  [yellow]Drift ({reason}):[/yellow] no speech in "
-                        f"{fmt_time(offset)}–{fmt_time(offset + seg.start)}, skipping"
+                        f"{fmt_time(offset)}–{fmt_time(skip_to)}, skipping"
                     )
-                    offset = offset + seg.start
+                    offset = skip_to
                 else:
                     progress.console.print(
                         f"  [yellow]Drift ({reason}):[/yellow] resetting decoder at {fmt_time(drift_point)}"
