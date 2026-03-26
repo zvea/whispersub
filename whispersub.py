@@ -769,7 +769,7 @@ def validate_audio_tracks(videos: list[Path], requested: int | None) -> None:
         sys.exit(1)
 
 
-def rotate_backups(dest: Path, keep: int) -> None:
+def rotate_backups(dest: Path, keep: int, *, console: Console | None = None) -> None:
     """Rotate existing subtitle file into .bak backups, keeping at most *keep*.
 
     ``foo.de.ass`` → ``foo.de.ass.bak`` (most recent)
@@ -809,6 +809,8 @@ def rotate_backups(dest: Path, keep: int) -> None:
 
     # dest → .bak
     dest.rename(bak)
+    if console:
+        console.print(f"  [green]Backup:[/green] {dest.name} → {bak.name}")
 
 
 def process_video(
@@ -833,7 +835,7 @@ def process_video(
         progress.console.print("  [yellow]Skipping:[/yellow] subtitle already exists.")
     else:
         if args.force and dest.exists():
-            rotate_backups(dest, args.keep)
+            rotate_backups(dest, args.keep, console=progress.console)
         subs = build_subs(
             segments,
             font_size=args.font_size,

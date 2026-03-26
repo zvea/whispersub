@@ -546,6 +546,30 @@ def test_rotate_backups_keep_one(tmp_path):
     assert not (tmp_path / "movie.de.ass.bak.1").exists()
 
 
+def test_rotate_backups_prints_rename(tmp_path):
+    """When a console is provided, each rename is printed in Saved:-style."""
+    from rich.console import Console
+    from io import StringIO
+
+    buf = StringIO()
+    con = Console(file=buf, highlight=False)
+    dest = tmp_path / "movie.de.ass"
+    dest.write_text("v1")
+    rotate_backups(dest, keep=3, console=con)
+    output = buf.getvalue()
+    assert "Backup:" in output
+    assert "movie.de.ass" in output
+    assert ".bak" in output
+
+
+def test_rotate_backups_no_print_without_console(tmp_path, capsys):
+    """Without a console argument, nothing is printed (backwards compat)."""
+    dest = tmp_path / "movie.de.ass"
+    dest.write_text("v1")
+    rotate_backups(dest, keep=3)
+    assert capsys.readouterr().out == ""
+
+
 # ---------------------------------------------------------------------------
 # validate_audio_tracks
 # ---------------------------------------------------------------------------
