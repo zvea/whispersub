@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.3.1 — 2026-03-26
+
+- Fixed CPU fallback on Windows.
+
 ## v1.3.0 — 2026-03-26
 
 - Replaced VAD pre-filter with `hallucination_silence_threshold`, fixing dropped speech over background music/noise. May increase hallucinations over non-speech audio.
