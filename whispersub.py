@@ -537,10 +537,16 @@ def _transcribe_with_retry(
     *,
     language: str | None,
     progress: Progress,
-) -> Iterator[Segment]:
-    """Yield segments, retrying from a fresh decoder state when drift is detected.
+) -> Iterator[tuple[Segment, str | None]]:
+    """Yield ``(segment, reason)`` tuples, retrying on drift.
+
+    *reason* is ``None`` for normal segments or a short string (``"gap"``,
+    ``"script"``, ``"echo"``) for segments that triggered a decoder reset.
+    Discarded segments are still yielded (with the reason) so callers can
+    record them as comments in the output file.
 
     Drift is detected by any of:
+
     - A gap > _DRIFT_THRESHOLD seconds between consecutive segments.
     - Non-Latin characters in a Latin-language transcription (script mismatch).
     - The same segment text appearing _ECHO_THRESHOLD times in recent output.
@@ -569,6 +575,8 @@ def _transcribe_with_retry(
                 seg, last_end, language=language, recent_texts=recent_texts,
             )
             if reason:
+                # Yield the discarded segment so it can be logged as a comment.
+                yield _offset_segment(seg, offset), reason
                 drift_point = offset + last_end
                 if not yielded_any:
                     # Retry produced nothing before the same point — skip ahead.
@@ -583,7 +591,7 @@ def _transcribe_with_retry(
                     )
                     offset = drift_point
                 break  # abandon this pass, retry from new offset
-            yield _offset_segment(seg, offset)
+            yield _offset_segment(seg, offset), None
             last_end = seg.end
             yielded_any = True
             text = seg.text.strip()
@@ -649,7 +657,7 @@ def format_segment_for_console(seg: Segment, colour_by: ColourBy) -> str:
 
 
 def build_subs(
-    segments: Iterable[Segment],
+    segments: Iterable[tuple[Segment, str | None]],
     *,
     font_size: int,
     limit: int | None,
@@ -660,15 +668,20 @@ def build_subs(
     video: Path,
     progress: Progress,
 ) -> pysubs2.SSAFile:
-    """Consume segments and return a populated SSAFile."""
+    """Consume (segment, drift_reason) tuples and return a populated SSAFile."""
     subs = pysubs2.SSAFile()
     subs.info["PlayResX"] = "1280"
     subs.info["PlayResY"] = "720"
     subs.styles["Default"].fontsize = font_size
     set_script_info(subs, info, video)
     task_progress = progress.add_task("Transcribing:", total=info.duration, total_label=f"{int(info.duration / 60)} minutes")
-    for seg_id, seg in enumerate(itertools.islice(segments, limit)):
+    for seg_id, (seg, drift_reason) in enumerate(itertools.islice(segments, limit)):
         seg.words = merge_tokens(seg.words or [])
+        if drift_reason:
+            progress.console.print(f"{format_segment_for_console(seg, colour_by)} [bold red](drift: {drift_reason})[/]")
+            if comment := make_segment_comment(seg, seg_id, filtered=f"drift:{drift_reason}"):
+                subs.append(comment)
+            continue
         if is_hallucination(seg.text):
             progress.console.print(f"{format_segment_for_console(seg, colour_by)} [bold red](ignoring known hallucination)[/]")
             if comment := make_segment_comment(seg, seg_id, filtered="hallucination"):

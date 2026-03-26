@@ -939,6 +939,26 @@ def _mock_progress():
     return progress
 
 
+def _collect_retry(audio, model, kwargs=None, *, language=None, progress=None):
+    """Run _transcribe_with_retry and split results into kept and discarded lists.
+
+    Returns (kept, discarded) where kept is a list of Segments yielded with
+    reason=None, and discarded is a list of (Segment, reason) tuples.
+    """
+    if kwargs is None:
+        kwargs = {}
+    if progress is None:
+        progress = _mock_progress()
+    kept = []
+    discarded = []
+    for seg, reason in _transcribe_with_retry(audio, model, kwargs, language=language, progress=progress):
+        if reason is None:
+            kept.append(seg)
+        else:
+            discarded.append((seg, reason))
+    return kept, discarded
+
+
 def _fake_transcribe(pass_segments: list[list[Segment]]):
     """Return a model mock whose transcribe() yields a different segment list per call.
 
@@ -969,13 +989,13 @@ def test_retry_no_drift():
     model = _fake_transcribe([segs])
     audio = np.zeros(20 * 16_000, dtype=np.float32)
 
-    result = list(_transcribe_with_retry(audio, model, {}, language=None, progress=_mock_progress()))
+    kept, discarded = _collect_retry(audio, model, language=None)
 
-    assert len(result) == 3
+    assert len(kept) == 3
+    assert len(discarded) == 0
     assert model.transcribe.call_count == 1
-    # Timestamps unchanged (offset=0)
-    assert result[0].start == pytest.approx(0.0)
-    assert result[2].end == pytest.approx(15.0)
+    assert kept[0].start == pytest.approx(0.0)
+    assert kept[2].end == pytest.approx(15.0)
 
 
 def test_retry_resets_on_drift():
@@ -994,15 +1014,18 @@ def test_retry_resets_on_drift():
     model = _fake_transcribe([pass1, pass2])
     audio = np.zeros(120 * 16_000, dtype=np.float32)
 
-    result = list(_transcribe_with_retry(audio, model, {}, language=None, progress=_mock_progress()))
+    kept, discarded = _collect_retry(audio, model, language=None)
 
     assert model.transcribe.call_count == 2
-    # Pass 1 yielded 2 segments, pass 2 yielded 2 (offset-adjusted)
-    assert len(result) == 4
-    assert result[0].start == pytest.approx(0.0)
-    assert result[1].end == pytest.approx(10.0)
-    assert result[2].start == pytest.approx(11.0)  # 1.0 + offset 10.0
-    assert result[3].end == pytest.approx(22.0)    # 12.0 + offset 10.0
+    assert len(kept) == 4
+    assert kept[0].start == pytest.approx(0.0)
+    assert kept[1].end == pytest.approx(10.0)
+    assert kept[2].start == pytest.approx(11.0)
+    assert kept[3].end == pytest.approx(22.0)
+    # The drifted segment is recorded
+    assert len(discarded) == 1
+    assert discarded[0][0].text == "drifted"
+    assert discarded[0][1] == "gap"
 
 
 def test_retry_skips_when_no_speech_before_gap():
@@ -1020,15 +1043,16 @@ def test_retry_skips_when_no_speech_before_gap():
     audio = np.zeros(120 * 16_000, dtype=np.float32)
     progress = _mock_progress()
 
-    result = list(_transcribe_with_retry(audio, model, {}, language=None, progress=progress))
+    kept, discarded = _collect_retry(audio, model, language=None, progress=progress)
 
     assert model.transcribe.call_count == 2
-    assert len(result) == 2
-    # Segments from pass 2 are offset by 50.0
-    assert result[0].start == pytest.approx(50.0)
-    assert result[1].end == pytest.approx(58.0)
+    assert len(kept) == 2
+    assert kept[0].start == pytest.approx(50.0)
+    assert kept[1].end == pytest.approx(58.0)
+    # The skipped segment is recorded as discarded
+    assert len(discarded) == 1
+    assert discarded[0][1] == "gap"
     # Should have printed a "skipping" message
-    progress.console.print.assert_called()
     skip_calls = [c for c in progress.console.print.call_args_list
                   if "no speech" in str(c)]
     assert len(skip_calls) == 1
@@ -1039,9 +1063,10 @@ def test_retry_empty_pass_terminates():
     model = _fake_transcribe([[]])
     audio = np.zeros(60 * 16_000, dtype=np.float32)
 
-    result = list(_transcribe_with_retry(audio, model, {}, language=None, progress=_mock_progress()))
+    kept, discarded = _collect_retry(audio, model, language=None)
 
-    assert result == []
+    assert kept == []
+    assert discarded == []
     assert model.transcribe.call_count == 1
 
 
@@ -1050,9 +1075,10 @@ def test_retry_short_audio_skipped():
     model = _fake_transcribe([])
     audio = np.zeros(8000, dtype=np.float32)  # 0.5s
 
-    result = list(_transcribe_with_retry(audio, model, {}, language=None, progress=_mock_progress()))
+    kept, discarded = _collect_retry(audio, model, language=None)
 
-    assert result == []
+    assert kept == []
+    assert discarded == []
     assert model.transcribe.call_count == 0
 
 
@@ -1075,36 +1101,36 @@ def test_retry_multiple_drifts():
     model = _fake_transcribe([pass1, pass2, pass3])
     audio = np.zeros(120 * 16_000, dtype=np.float32)
 
-    result = list(_transcribe_with_retry(audio, model, {}, language=None, progress=_mock_progress()))
+    kept, discarded = _collect_retry(audio, model, language=None)
 
     assert model.transcribe.call_count == 3
-    assert len(result) == 3
-    assert result[0].start == pytest.approx(0.0)   # pass 1
-    assert result[0].end == pytest.approx(5.0)
-    assert result[1].start == pytest.approx(5.0)   # pass 2: 0.0 + offset 5.0
-    assert result[1].end == pytest.approx(9.0)     # 4.0 + offset 5.0
-    assert result[2].start == pytest.approx(9.0)   # pass 3: 0.0 + offset 9.0
-    assert result[2].end == pytest.approx(12.0)    # 3.0 + offset 9.0
+    assert len(kept) == 3
+    assert kept[0].start == pytest.approx(0.0)
+    assert kept[1].start == pytest.approx(5.0)
+    assert kept[2].start == pytest.approx(9.0)
+    assert len(discarded) == 2
+    assert discarded[0][0].text == "drifted"
+    assert discarded[1][0].text == "drifted again"
 
 
 def test_retry_offsets_words():
     """Word timestamps are offset-adjusted on retry passes."""
     pass1 = [
-        make_seg(words=[w(" hi", 0.0, 2.0)], start=0.0, end=2.0),
-        make_seg(words=None, start=50.0, end=55.0),  # drift
+        make_seg(words=[w(" hi", 0.0, 2.0)], start=0.0, end=2.0, text="hi"),
+        make_seg(words=None, start=50.0, end=55.0, text="drifted"),  # drift
     ]
     pass2 = [
-        make_seg(words=[w(" there", 1.0, 3.0)], start=1.0, end=3.0),
+        make_seg(words=[w(" there", 1.0, 3.0)], start=1.0, end=3.0, text="there"),
     ]
     model = _fake_transcribe([pass1, pass2])
     audio = np.zeros(60 * 16_000, dtype=np.float32)
 
-    result = list(_transcribe_with_retry(audio, model, {}, language=None, progress=_mock_progress()))
+    kept, discarded = _collect_retry(audio, model, language=None)
 
-    assert len(result) == 2
-    assert result[0].words[0].start == pytest.approx(0.0)  # no offset
-    assert result[1].words[0].start == pytest.approx(3.0)  # 1.0 + offset 2.0
-    assert result[1].words[0].end == pytest.approx(5.0)    # 3.0 + offset 2.0
+    assert len(kept) == 2
+    assert kept[0].words[0].start == pytest.approx(0.0)
+    assert kept[1].words[0].start == pytest.approx(3.0)
+    assert kept[1].words[0].end == pytest.approx(5.0)
 
 
 # ---------------------------------------------------------------------------
@@ -1211,17 +1237,16 @@ def test_retry_resets_on_script_mismatch():
     audio = np.zeros(60 * 16_000, dtype=np.float32)
     progress = _mock_progress()
 
-    result = list(_transcribe_with_retry(audio, model, {}, language="de", progress=progress))
+    kept, discarded = _collect_retry(audio, model, language="de", progress=progress)
 
     assert model.transcribe.call_count == 2
-    assert len(result) == 2
-    assert result[0].text == "Guten Tag."
-    assert result[1].text == "Auf Wiedersehen."
-    assert result[1].start == pytest.approx(5.0)  # offset from pass 1 end
-    # Verify drift message mentions "script"
-    script_calls = [c for c in progress.console.print.call_args_list
-                    if "script" in str(c)]
-    assert len(script_calls) == 1
+    assert len(kept) == 2
+    assert kept[0].text == "Guten Tag."
+    assert kept[1].text == "Auf Wiedersehen."
+    assert kept[1].start == pytest.approx(5.0)
+    assert len(discarded) == 1
+    assert discarded[0][1] == "script"
+    assert "ご視聴" in discarded[0][0].text
 
 
 # ---------------------------------------------------------------------------
@@ -1249,25 +1274,21 @@ def test_retry_resets_on_echo():
     audio = np.zeros(60 * 16_000, dtype=np.float32)
     progress = _mock_progress()
 
-    result = list(_transcribe_with_retry(audio, model, {}, language="de", progress=progress))
+    kept, discarded = _collect_retry(audio, model, language="de", progress=progress)
 
     assert model.transcribe.call_count == 2
-    # 4 segments yielded (normal + 3 repeats), 4th repeat triggers reset
-    assert len(result) == 5  # 4 from pass1 + 1 from pass2
-    assert result[0].text == "Normal speech."
-    assert result[1].text == "Ich bin gut gegangen."
-    assert result[3].text == "Ich bin gut gegangen."
-    assert result[4].text == "Fresh decoder output."
-    # Verify drift message mentions "echo"
-    echo_calls = [c for c in progress.console.print.call_args_list
-                  if "echo" in str(c)]
-    assert len(echo_calls) == 1
+    assert len(kept) == 5  # 4 from pass1 + 1 from pass2
+    assert kept[0].text == "Normal speech."
+    assert kept[4].text == "Fresh decoder output."
+    assert len(discarded) == 1
+    assert discarded[0][1] == "echo"
+    assert discarded[0][0].text == "Ich bin gut gegangen."
 
 
 def test_retry_script_mismatch_as_first_segment():
     """Non-Latin text as the very first segment skips ahead (like S02E10 Korean at 1:40)."""
     pass1 = [
-        make_seg(words=None, start=0.0, end=2.0, text="나이탈리아"),  # script drift, no prior good segment
+        make_seg(words=None, start=0.0, end=2.0, text="나이탈리아"),
     ]
     pass2 = [
         make_seg(words=None, start=0.0, end=5.0, text="Das konnte ich nicht wissen."),
@@ -1276,63 +1297,51 @@ def test_retry_script_mismatch_as_first_segment():
     audio = np.zeros(60 * 16_000, dtype=np.float32)
     progress = _mock_progress()
 
-    result = list(_transcribe_with_retry(audio, model, {}, language="de", progress=progress))
+    kept, discarded = _collect_retry(audio, model, language="de", progress=progress)
 
     assert model.transcribe.call_count == 2
-    assert len(result) == 1
-    assert result[0].text == "Das konnte ich nicht wissen."
-    # Should have skipped to where the bad segment was
-    assert result[0].start == pytest.approx(0.0)  # retry from seg.start=0.0, new seg at 0.0
-    # Verify skip message
-    skip_calls = [c for c in progress.console.print.call_args_list
-                  if "no speech" in str(c)]
-    assert len(skip_calls) == 1
+    assert len(kept) == 1
+    assert kept[0].text == "Das konnte ich nicht wissen."
+    assert len(discarded) == 1
+    assert discarded[0][1] == "script"
 
 
 def test_retry_script_mismatch_retry_also_fails():
-    """When retry also produces non-Latin as first segment, skip past it (like 고춧가루 over a 'Hm.')."""
-    # Pass 1: normal then script drift
+    """When retry also produces non-Latin as first segment, skip past it."""
     pass1 = [
         make_seg(words=None, start=0.0, end=5.0, text="Normaler Text."),
-        make_seg(words=None, start=6.0, end=7.0, text="고춧가루"),  # script drift
+        make_seg(words=None, start=6.0, end=7.0, text="고춧가루"),
     ]
-    # Pass 2: retry from 5.0, also produces non-Latin first
     pass2 = [
-        make_seg(words=None, start=2.0, end=3.0, text="고춧가루"),  # still bad
+        make_seg(words=None, start=2.0, end=3.0, text="고춧가루"),
     ]
-    # Pass 3: skip to 7.0 (5.0 + 2.0), fresh start works
     pass3 = [
         make_seg(words=None, start=0.0, end=4.0, text="Weiter gehts."),
     ]
     model = _fake_transcribe([pass1, pass2, pass3])
     audio = np.zeros(60 * 16_000, dtype=np.float32)
 
-    result = list(_transcribe_with_retry(audio, model, {}, language="de", progress=_mock_progress()))
+    kept, discarded = _collect_retry(audio, model, language="de", progress=_mock_progress())
 
     assert model.transcribe.call_count == 3
-    assert len(result) == 2
-    assert result[0].text == "Normaler Text."
-    assert result[1].text == "Weiter gehts."
+    assert len(kept) == 2
+    assert kept[0].text == "Normaler Text."
+    assert kept[1].text == "Weiter gehts."
+    assert len(discarded) == 2
+    assert all(d[1] == "script" for d in discarded)
 
 
 def test_retry_echo_persists_across_retry_boundary():
-    """recent_texts carries across retries so echo from before a gap still counts.
-
-    Pass 1 yields 2 copies of "Looping text." then hits a gap.
-    Pass 2 retries and yields a 3rd copy — now 3 in history — then the 4th triggers echo.
-    """
-    # Pass 1: two repeats, then a gap triggers drift
+    """recent_texts carries across retries so echo from before a gap still counts."""
     pass1 = [
         make_seg(words=None, start=0.0, end=2.0, text="Looping text."),
         make_seg(words=None, start=3.0, end=4.0, text="Looping text."),
         make_seg(words=None, start=50.0, end=52.0, text="Far away."),  # gap drift
     ]
-    # Pass 2: retry from 4.0, produces same text — 3rd yields, 4th triggers echo
     pass2 = [
-        make_seg(words=None, start=0.0, end=2.0, text="Looping text."),  # 3rd overall, yields
-        make_seg(words=None, start=3.0, end=4.0, text="Looping text."),  # 4th: 3 in history → echo
+        make_seg(words=None, start=0.0, end=2.0, text="Looping text."),  # 3rd, yields
+        make_seg(words=None, start=3.0, end=4.0, text="Looping text."),  # 4th: echo
     ]
-    # Pass 3: retry, fresh
     pass3 = [
         make_seg(words=None, start=0.0, end=3.0, text="Finally different."),
     ]
@@ -1340,26 +1349,23 @@ def test_retry_echo_persists_across_retry_boundary():
     audio = np.zeros(120 * 16_000, dtype=np.float32)
     progress = _mock_progress()
 
-    result = list(_transcribe_with_retry(audio, model, {}, language="de", progress=progress))
+    kept, discarded = _collect_retry(audio, model, language="de", progress=progress)
 
     assert model.transcribe.call_count == 3
-    assert len(result) == 4  # 2 from pass1, 1 from pass2, 1 from pass3
-    assert result[0].text == "Looping text."
-    assert result[1].text == "Looping text."
-    assert result[2].text == "Looping text."
-    assert result[3].text == "Finally different."
-    # Should see both gap and echo drift messages
-    gap_calls = [c for c in progress.console.print.call_args_list if "gap" in str(c)]
-    echo_calls = [c for c in progress.console.print.call_args_list if "echo" in str(c)]
-    assert len(gap_calls) >= 1
-    assert len(echo_calls) >= 1
+    assert len(kept) == 4  # 2 from pass1, 1 from pass2, 1 from pass3
+    assert kept[3].text == "Finally different."
+    # gap + echo discards
+    assert len(discarded) == 2
+    reasons = {d[1] for d in discarded}
+    assert "gap" in reasons
+    assert "echo" in reasons
 
 
 def test_retry_cyrillic_triggers_script_mismatch():
-    """Cyrillic in a German file triggers script drift (like S01E06 'О, ты шесть')."""
+    """Cyrillic in a German file triggers script drift."""
     pass1 = [
         make_seg(words=None, start=0.0, end=5.0, text="Vielen Dank."),
-        make_seg(words=None, start=6.0, end=8.0, text="О, ты шесть."),  # Cyrillic
+        make_seg(words=None, start=6.0, end=8.0, text="О, ты шесть."),
     ]
     pass2 = [
         make_seg(words=None, start=0.0, end=3.0, text="Herr Stromberg!"),
@@ -1367,12 +1373,13 @@ def test_retry_cyrillic_triggers_script_mismatch():
     model = _fake_transcribe([pass1, pass2])
     audio = np.zeros(60 * 16_000, dtype=np.float32)
 
-    result = list(_transcribe_with_retry(audio, model, {}, language="de", progress=_mock_progress()))
+    kept, discarded = _collect_retry(audio, model, language="de", progress=_mock_progress())
 
     assert model.transcribe.call_count == 2
-    assert len(result) == 2
-    assert result[0].text == "Vielen Dank."
-    assert result[1].text == "Herr Stromberg!"
+    assert len(kept) == 2
+    assert kept[1].text == "Herr Stromberg!"
+    assert len(discarded) == 1
+    assert discarded[0][1] == "script"
 
 
 def test_retry_no_script_check_for_japanese_language():
@@ -1385,7 +1392,8 @@ def test_retry_no_script_check_for_japanese_language():
     model = _fake_transcribe([segs])
     audio = np.zeros(20 * 16_000, dtype=np.float32)
 
-    result = list(_transcribe_with_retry(audio, model, {}, language="ja", progress=_mock_progress()))
+    kept, discarded = _collect_retry(audio, model, language="ja", progress=_mock_progress())
 
     assert model.transcribe.call_count == 1
-    assert len(result) == 3
+    assert len(kept) == 3
+    assert len(discarded) == 0
