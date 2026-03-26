@@ -52,6 +52,7 @@ dependencies = [
 [project.urls]
 Repository = "https://github.com/zvea/whispersub"
 Issues = "https://github.com/zvea/whispersub/issues"
+Changelog = "https://github.com/zvea/whispersub/blob/main/CHANGELOG.md"
 
 [project.scripts]
 whispersub = "whispersub:main"
